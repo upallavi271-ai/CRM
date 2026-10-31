@@ -1,0 +1,313 @@
+// CRM data model. Every business table carries the common base fields:
+// id, tenant_id, created_by, updated_by, created_at, updated_at, is_deleted (soft delete).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- Platform ----------
+
+model Tenant {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  users        User[]
+  roles        Role[]
+  customFields CustomField[]
+  customers    Customer[]
+  auditLogs    AuditLog[]
+  leads        Lead[]
+  pipelines    Pipeline[]
+  deals        Deal[]
+
+  @@map("tenants")
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+}
+
+model User {
+  id           String     @id @default(uuid()) @db.Uuid
+  tenantId     String     @map("tenant_id") @db.Uuid
+  name         String
+  email        String
+  phone        String?
+  passwordHash String     @map("password_hash")
+  roleId       String     @map("role_id") @db.Uuid
+  managerId    String?    @map("manager_id") @db.Uuid
+  status       UserStatus @default(ACTIVE)
+  lastLoginAt  DateTime?  @map("last_login_at")
+  createdBy    String?    @map("created_by") @db.Uuid
+  updatedBy    String?    @map("updated_by") @db.Uuid
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+  isDeleted    Boolean    @default(false) @map("is_deleted")
+
+  tenant  Tenant @relation(fields: [tenantId], references: [id])
+  role    Role   @relation(fields: [roleId], references: [id])
+  manager User?  @relation("UserManager", fields: [managerId], references: [id])
+  reports User[] @relation("UserManager")
+
+  assignedLeads Lead[] @relation("LeadAssignee")
+  ownedDeals    Deal[] @relation("DealOwner")
+
+  @@unique([tenantId, email])
+  @@index([tenantId, status])
+  @@map("users")
+}
+
+model Role {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  name        String
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  tenant      Tenant           @relation(fields: [tenantId], references: [id])
+  users       User[]
+  permissions RolePermission[]
+
+  @@unique([tenantId, name])
+  @@map("roles")
+}
+
+// Permissions are global, in Module.Action format (Lead.Create, Customer.Read, ...)
+model Permission {
+  id     String @id @default(uuid()) @db.Uuid
+  key    String @unique
+  module String
+  action String
+
+  roles RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String @map("role_id") @db.Uuid
+  permissionId String @map("permission_id") @db.Uuid
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permission")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  userId    String?  @map("user_id") @db.Uuid
+  module    String
+  recordId  String?  @map("record_id")
+  action    String
+  oldValue  Json?    @map("old_value")
+  newValue  Json?    @map("new_value")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, module, recordId])
+  @@index([tenantId, createdAt])
+  @@map("audit_logs")
+}
+
+// ---------- CRM Fields (custom fields) ----------
+
+enum CustomFieldType {
+  TEXT
+  NUMBER
+  DATE
+  BOOLEAN
+  SELECT
+  EMAIL
+  PHONE
+}
+
+model CustomField {
+  id        String          @id @default(uuid()) @db.Uuid
+  tenantId  String          @map("tenant_id") @db.Uuid
+  entity    String          @default("customer") // which record type this field belongs to
+  name      String
+  key       String
+  type      CustomFieldType
+  options   String[]        @default([]) // choices for SELECT
+  required  Boolean         @default(false)
+  position  Int             @default(0)
+  color     String          @default("#3b82f6")
+  createdBy String?         @map("created_by") @db.Uuid
+  updatedBy String?         @map("updated_by") @db.Uuid
+  createdAt DateTime        @default(now()) @map("created_at")
+  updatedAt DateTime        @updatedAt @map("updated_at")
+  isDeleted Boolean         @default(false) @map("is_deleted")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, entity, position])
+  @@map("custom_fields")
+}
+
+// ---------- Customers ----------
+
+enum CustomerStatus {
+  ACTIVE
+  INACTIVE
+}
+
+model Customer {
+  id           String         @id @default(uuid()) @db.Uuid
+  tenantId     String         @map("tenant_id") @db.Uuid
+  name         String
+  email        String?
+  phone        String?
+  status       CustomerStatus @default(ACTIVE)
+  tags         String[]       @default([])
+  customFields Json           @default("{}") @map("custom_fields") // { [field.key]: value }
+  ownerId      String?        @map("owner_id") @db.Uuid
+  createdBy    String?        @map("created_by") @db.Uuid
+  updatedBy    String?        @map("updated_by") @db.Uuid
+  createdAt    DateTime       @default(now()) @map("created_at")
+  updatedAt    DateTime       @updatedAt @map("updated_at")
+  isDeleted    Boolean        @default(false) @map("is_deleted")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  leads  Lead[]
+  deals  Deal[]
+
+  @@index([tenantId, isDeleted, createdAt])
+  @@index([tenantId, email])
+  @@index([tenantId, phone])
+  @@map("customers")
+}
+
+// ---------- Leads (Acquisition hub) ----------
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  DISQUALIFIED
+  CONVERTED
+}
+
+model Lead {
+  id                  String     @id @default(uuid()) @db.Uuid
+  tenantId            String     @map("tenant_id") @db.Uuid
+  number              Int        @unique @default(autoincrement()) // shown as L-0001
+  name                String
+  email               String?
+  phone               String?
+  company             String?
+  source              String     @default("Website")
+  status              LeadStatus @default(NEW)
+  score               Int        @default(0)
+  requirement         String?
+  estimatedValue      Decimal?   @map("estimated_value") @db.Decimal(14, 2)
+  assignedToId        String?    @map("assigned_to") @db.Uuid
+  disqualifyReason    String?    @map("disqualify_reason")
+  convertedCustomerId String?    @map("converted_customer_id") @db.Uuid
+  convertedDealId     String?    @map("converted_deal_id") @db.Uuid
+  convertedAt         DateTime?  @map("converted_at")
+  createdBy           String?    @map("created_by") @db.Uuid
+  updatedBy           String?    @map("updated_by") @db.Uuid
+  createdAt           DateTime   @default(now()) @map("created_at")
+  updatedAt           DateTime   @updatedAt @map("updated_at")
+  isDeleted           Boolean    @default(false) @map("is_deleted")
+
+  tenant            Tenant    @relation(fields: [tenantId], references: [id])
+  assignedTo        User?     @relation("LeadAssignee", fields: [assignedToId], references: [id])
+  convertedCustomer Customer? @relation(fields: [convertedCustomerId], references: [id])
+  deals             Deal[]
+
+  @@index([tenantId, isDeleted, status])
+  @@index([tenantId, assignedToId])
+  @@index([tenantId, email])
+  @@index([tenantId, phone])
+  @@index([tenantId, createdAt])
+  @@map("leads")
+}
+
+// ---------- Deals (Revenue hub) ----------
+
+enum StageType {
+  OPEN
+  WON
+  LOST
+}
+
+model Pipeline {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  name      String
+  isDefault Boolean  @default(false) @map("is_default")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant          @relation(fields: [tenantId], references: [id])
+  stages PipelineStage[]
+  deals  Deal[]
+
+  @@map("pipelines")
+}
+
+// Stages are configurable per pipeline (not hardcoded).
+model PipelineStage {
+  id          String    @id @default(uuid()) @db.Uuid
+  pipelineId  String    @map("pipeline_id") @db.Uuid
+  name        String
+  position    Int
+  probability Int       @default(0) // win probability %
+  type        StageType @default(OPEN)
+  color       String    @default("#64748b")
+
+  pipeline Pipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  deals    Deal[]
+
+  @@index([pipelineId, position])
+  @@map("pipeline_stages")
+}
+
+model Deal {
+  id                String    @id @default(uuid()) @db.Uuid
+  tenantId          String    @map("tenant_id") @db.Uuid
+  number            Int       @unique @default(autoincrement()) // shown as D-0001
+  title             String
+  value             Decimal   @default(0) @db.Decimal(14, 2)
+  pipelineId        String    @map("pipeline_id") @db.Uuid
+  stageId           String    @map("stage_id") @db.Uuid
+  customerId        String?   @map("customer_id") @db.Uuid
+  leadId            String?   @map("lead_id") @db.Uuid
+  ownerId           String?   @map("owner_id") @db.Uuid
+  expectedCloseDate DateTime? @map("expected_close_date") @db.Date
+  stageChangedAt    DateTime  @default(now()) @map("stage_changed_at")
+  closedAt          DateTime? @map("closed_at")
+  lostReason        String?   @map("lost_reason")
+  notes             String?
+  createdBy         String?   @map("created_by") @db.Uuid
+  updatedBy         String?   @map("updated_by") @db.Uuid
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+  isDeleted         Boolean   @default(false) @map("is_deleted")
+
+  tenant   Tenant        @relation(fields: [tenantId], references: [id])
+  pipeline Pipeline      @relation(fields: [pipelineId], references: [id])
+  stage    PipelineStage @relation(fields: [stageId], references: [id])
+  customer Customer?     @relation(fields: [customerId], references: [id])
+  lead     Lead?         @relation(fields: [leadId], references: [id])
+  owner    User?         @relation("DealOwner", fields: [ownerId], references: [id])
+
+  @@index([tenantId, isDeleted, stageId])
+  @@index([tenantId, ownerId])
+  @@index([tenantId, customerId])
+  @@index([tenantId, closedAt])
+  @@map("deals")
+}
